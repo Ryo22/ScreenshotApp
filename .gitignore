@@ -1,0 +1,17 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# App bundle (setup.commandで再生成されるため)
+*.app/
+
+# IDE
+.idea/
+.vscode/
+*.swp
