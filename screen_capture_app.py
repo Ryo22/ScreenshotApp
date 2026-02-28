@@ -47,6 +47,9 @@ try:
         kCGSessionEventTap, kCGHeadInsertEventTap,
         kCGEventKeyDown, kCGKeyboardEventKeycode,
         kCGEventFlagMaskCommand, kCGEventFlagMaskControl,
+        kCGEventLeftMouseDown, kCGEventLeftMouseUp,
+        kCGMouseButtonLeft, CGEventCreateMouseEvent, CGEventPost,
+        kCGHIDEventTap,
         CFMachPortCreateRunLoopSource, CFRunLoopGetCurrent,
         CFRunLoopAddSource, CFRunLoopRun, kCFRunLoopCommonModes
     )
@@ -77,12 +80,17 @@ class AppState:
     status: str = "停止中"
     settling_time: float = 0.5
     polling_interval: float = 0.2
+    auto_tap_enabled: bool = False
+    auto_tap_x: int = 0
+    auto_tap_y: int = 0
+    auto_tap_interval: float = 0.1
 
 state = AppState()
 
 DIFF_THRESHOLD = 0.5
 PORT = 8765
 SHORTCUT_KEYCODE = 1  # S key
+STOP_SHORTCUT_KEYCODE = 7  # X key
 
 
 # ─── Window Functions ────────────────────────────
@@ -377,25 +385,80 @@ def manual_capture():
     return False
 
 
+def simulate_click(x: int, y: int):
+    try:
+        event_down = CGEventCreateMouseEvent(None, kCGEventLeftMouseDown, (x, y), kCGMouseButtonLeft)
+        CGEventPost(kCGHIDEventTap, event_down)
+        time.sleep(0.05)
+        event_up = CGEventCreateMouseEvent(None, kCGEventLeftMouseUp, (x, y), kCGMouseButtonLeft)
+        CGEventPost(kCGHIDEventTap, event_up)
+        print(f"🖱 クリック: ({x}, {y})")
+    except Exception as e:
+        print(f"クリックシミュレートエラー: {e}")
+
+def get_click_position() -> Optional[Tuple[int, int]]:
+    """screencaptureを活用してクリック位置を取得"""
+    positions = []
+    monitoring = {'active': True}
+
+    def monitor_mouse():
+        while monitoring['active']:
+            try:
+                event = CGEventCreate(None)
+                pos = CGEventGetLocation(event)
+                positions.append((int(pos.x), int(pos.y)))
+            except:
+                pass
+            time.sleep(0.016)
+
+    monitor_thread = threading.Thread(target=monitor_mouse, daemon=True)
+    monitor_thread.start()
+
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+        tmp_path = tmp.name
+    subprocess.run(['screencapture', '-i', tmp_path], capture_output=True)
+
+    monitoring['active'] = False
+    monitor_thread.join(timeout=1)
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+
+    if len(positions) >= 2:
+        return positions[-1]
+    return None
+
 def auto_monitor_loop():
     while state.is_running and state.mode == "auto":
         try:
-            current_image = do_capture()
-            if current_image is None:
-                time.sleep(1)
-                continue
-            if state.last_image:
-                if images_different(state.last_image, current_image):
-                    state.change_detected_time = time.time()
-                    state.status = "🔍 変化検知..."
-                elif state.change_detected_time:
-                    if time.time() - state.change_detected_time >= state.settling_time:
-                        save_image(current_image)
-                        state.change_detected_time = None
-            state.last_image = current_image
+            if state.auto_tap_enabled:
+                simulate_click(state.auto_tap_x, state.auto_tap_y)
+                time.sleep(state.settling_time)
+                current_image = do_capture()
+                if current_image:
+                    save_image(current_image)
+                # Sleep in increments so stop_capture can interrupt it quickly
+                sleep_time = state.auto_tap_interval
+                t0 = time.time()
+                while state.is_running and (time.time() - t0) < sleep_time:
+                    time.sleep(0.1)
+            else:
+                current_image = do_capture()
+                if current_image is None:
+                    time.sleep(1)
+                    continue
+                if state.last_image:
+                    if images_different(state.last_image, current_image):
+                        state.change_detected_time = time.time()
+                        state.status = "🔍 変化検知..."
+                    elif state.change_detected_time:
+                        if time.time() - state.change_detected_time >= state.settling_time:
+                            save_image(current_image)
+                            state.change_detected_time = None
+                state.last_image = current_image
+                time.sleep(state.polling_interval)
         except Exception as e:
             print(f"自動監視エラー: {e}")
-        time.sleep(state.polling_interval)
+            time.sleep(1)
 
 
 def start_capture():
@@ -435,10 +498,13 @@ def keyboard_callback(proxy, event_type, event, refcon):
         flags = CGEventGetFlags(event)
         cmd_pressed = (flags & kCGEventFlagMaskCommand) != 0
         ctrl_pressed = (flags & kCGEventFlagMaskControl) != 0
-        if cmd_pressed and ctrl_pressed and keycode == SHORTCUT_KEYCODE:
-            threading.Thread(target=manual_capture, daemon=True).start()
+        
+        if cmd_pressed and ctrl_pressed:
+            if keycode == SHORTCUT_KEYCODE:
+                threading.Thread(target=manual_capture, daemon=True).start()
+            elif keycode == STOP_SHORTCUT_KEYCODE and state.is_running:
+                threading.Thread(target=stop_capture, daemon=True).start()
     return event
-
 
 def start_keyboard_listener():
     tap = CGEventTapCreate(
@@ -557,7 +623,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         <h1>📷 ScreenshotApp</h1>
 
         <div class="info" style="{{manual_info_display}}">
-            ⌨️ 手動撮影: <kbd>Cmd</kbd> + <kbd>Ctrl</kbd> + <kbd>S</kbd>
+            ⌨️ 手動撮影: <kbd>Cmd</kbd> + <kbd>Ctrl</kbd> + <kbd>S</kbd><br>
+            🛑 停止: <kbd>Cmd</kbd> + <kbd>Ctrl</kbd> + <kbd>X</kbd>
         </div>
 
         <div class="target-info" style="{{target_display}}">
@@ -613,7 +680,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         </div>
 
         <div class="card" style="{{auto_display}}">
-            <h2>自動モード設定</h2>
+            <h2>🔄 自動モニタリング（変化検知）</h2>
             <div class="row">
                 <div style="flex:1">
                     <small>検知待機 (秒)</small>
@@ -623,6 +690,24 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                     <small>監視間隔 (秒)</small>
                     <input type="number" id="pollingInterval" value="{{polling_interval}}" step="0.1" min="0.1">
                 </div>
+            </div>
+            
+            <hr style="border:0; border-top:1px dashed rgba(255,255,255,0.2); margin: 12px 0;">
+            <h2>👆 自動タップ設定</h2>
+            <div style="margin-bottom: 8px;">
+                <label><input type="checkbox" id="autoTapEnabled" {{auto_tap_checked}}> 自動タップを有効にする</label>
+            </div>
+            <div class="row">
+                <div style="flex:1">
+                    <small>タップ待機時間 (秒)</small>
+                    <input type="number" id="autoTapInterval" value="{{auto_tap_interval}}" step="0.1" min="0.1">
+                </div>
+                <div style="flex:1; display:flex; flex-direction:column; justify-content:flex-end;">
+                    <button class="select-btn" onclick="getAutoTapPosition()" style="margin-top:0;">🖱 画面位置を取得</button>
+                </div>
+            </div>
+            <div style="margin-top: 6px; font-size: 0.85em; color: #aaa;">
+                設定位置: X <span id="dispX">{{auto_tap_x}}</span>, Y <span id="dispY">{{auto_tap_y}}</span>
             </div>
         </div>
 
@@ -651,9 +736,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         function setCaptureMode(m) { fetch('/api/capture_mode?mode='+m).then(()=>location.reload()); }
         function toggleCapture() {
             let p = `saveDir=${encodeURIComponent($('saveDir')?.value||'')}&settlingTime=${$('settlingTime')?.value||0.5}&pollingInterval=${$('pollingInterval')?.value||0.2}`;
+            p += `&autoTapEnabled=${$('autoTapEnabled')?.checked ? 1 : 0}&autoTapInterval=${$('autoTapInterval')?.value||1.0}`;
             if ($('rx')) p += `&rx=${$('rx').value}&ry=${$('ry').value}&rw=${$('rw').value}&rh=${$('rh').value}`;
             fetch('/api/toggle?'+p).then(()=>location.reload());
         }
+        function getAutoTapPosition() { fetch('/api/auto_tap_position').then(()=>location.reload()); }
         function openFolder() { fetch('/api/open_folder'); }
         function resetCount() { fetch('/api/reset').then(()=>location.reload()); }
         function selectFolder() { fetch('/api/select_folder').then(()=>location.reload()); }
@@ -697,6 +784,15 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 const data = await res.json();
                 document.querySelector('.count').textContent = data.count + ' 枚';
                 document.querySelector('.status div:last-child').textContent = data.status;
+
+                const btn = document.querySelector('.main-btn');
+                if (data.is_running) {
+                    btn.textContent = '⏹ 停止';
+                    btn.className = 'main-btn stop-btn';
+                } else {
+                    btn.textContent = '▶️ 開始';
+                    btn.className = 'main-btn start-btn';
+                }
             } catch(e) {}
         }
         setInterval(updateStatus, 1500);
@@ -747,6 +843,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                     '{{status}}': state.status,
                     '{{settling_time}}': str(state.settling_time),
                     '{{polling_interval}}': str(state.polling_interval),
+                    '{{auto_tap_checked}}': 'checked' if state.auto_tap_enabled else '',
+                    '{{auto_tap_interval}}': str(state.auto_tap_interval),
+                    '{{auto_tap_x}}': str(state.auto_tap_x),
+                    '{{auto_tap_y}}': str(state.auto_tap_y),
                     '{{auto_display}}': '' if state.mode == 'auto' else 'display:none;',
                     '{{manual_info_display}}': '' if state.mode == 'manual' else 'display:none;',
                     '{{target_display}}': '' if (state.capture_mode == 'window' and state.target_window_id) or (state.capture_mode == 'region' and state.region) else 'display:none;',
@@ -831,6 +931,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.end_headers()
 
+            elif path == '/api/auto_tap_position':
+                pos = get_click_position()
+                if pos:
+                    state.auto_tap_x, state.auto_tap_y = pos
+                    print(f"✅ 自動タップ位置を設定: X={pos[0]}, Y={pos[1]}")
+                self.send_response(200)
+                self.end_headers()
+
             elif path == '/api/toggle':
                 if state.is_running:
                     stop_capture()
@@ -839,6 +947,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                         state.save_dir = Path(query.get('saveDir', [str(state.save_dir)])[0])
                         state.settling_time = float(query.get('settlingTime', [0.5])[0])
                         state.polling_interval = float(query.get('pollingInterval', [0.2])[0])
+                        state.auto_tap_enabled = (query.get('autoTapEnabled', ['0'])[0] == '1')
+                        state.auto_tap_interval = float(query.get('autoTapInterval', [0.1])[0])
                         if state.capture_mode == 'region':
                             state.region = (
                                 int(query.get('rx', [100])[0]),
@@ -871,7 +981,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.end_headers()
-                data = json.dumps({'count': state.capture_count, 'status': state.status})
+                data = json.dumps({
+                    'count': state.capture_count, 
+                    'status': state.status,
+                    'is_running': state.is_running
+                })
                 self.wfile.write(data.encode('utf-8'))
 
             elif path == '/api/select_folder':
