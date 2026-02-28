@@ -289,15 +289,8 @@ def capture_region() -> Optional[Image.Image]:
 # ─── Core Functions ──────────────────────────────
 
 def init_capture_count():
+    """キャプチャカウントを0に初期化（起動時に必ず0から開始）"""
     state.capture_count = 0
-    if not state.save_dir.exists():
-        return
-    for f in state.save_dir.glob("slide_*.png"):
-        try:
-            num = int(f.stem.split("_")[1])
-            state.capture_count = max(state.capture_count, num)
-        except:
-            pass
 
 
 def images_different(img1: Image.Image, img2: Image.Image) -> bool:
