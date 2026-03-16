@@ -615,7 +615,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
     <div class="container">
         <h1>📷 ScreenshotApp</h1>
 
-        <div class="info" style="{{manual_info_display}}">
+        <div class="info">
             ⌨️ 手動撮影: <kbd>Cmd</kbd> + <kbd>Ctrl</kbd> + <kbd>S</kbd><br>
             🛑 停止: <kbd>Cmd</kbd> + <kbd>Ctrl</kbd> + <kbd>X</kbd>
         </div>
@@ -841,7 +841,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                     '{{auto_tap_x}}': str(state.auto_tap_x),
                     '{{auto_tap_y}}': str(state.auto_tap_y),
                     '{{auto_display}}': '' if state.mode == 'auto' else 'display:none;',
-                    '{{manual_info_display}}': '' if state.mode == 'manual' else 'display:none;',
                     '{{target_display}}': '' if (state.capture_mode == 'window' and state.target_window_id) or (state.capture_mode == 'region' and state.region) else 'display:none;',
                     '{{target_name}}': target_name,
                     '{{selected_window_id}}': str(state.target_window_id or ''),
