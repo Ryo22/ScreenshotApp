@@ -59,6 +59,61 @@ except ImportError as e:
     print("  pip3 install Pillow pyobjc-framework-Quartz pyobjc-framework-Cocoa")
     sys.exit(1)
 
+if len(sys.argv) > 1 and sys.argv[1] == "--overlay":
+    import objc
+    from AppKit import *
+    from PyObjCTools import AppHelper
+
+    def create_overlay():
+        app = NSApplication.sharedApplication()
+        app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        
+        rect = NSMakeRect(0, 0, 320, 48)
+        window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect, NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False
+        )
+        window.setOpaque_(False)
+        window.setBackgroundColor_(NSColor.clearColor())
+        window.setHasShadow_(False)
+        window.setLevel_(NSFloatingWindowLevel)
+        window.setIgnoresMouseEvents_(True)
+        
+        screen_rect = NSScreen.mainScreen().frame()
+        x = (screen_rect.size.width - 320) / 2
+        y = 120
+        window.setFrameOrigin_(NSMakePoint(x, y))
+        
+        class RoundedView(NSView):
+            def drawRect_(self, dirtyRect):
+                NSColor.clearColor().set()
+                NSRectFill(dirtyRect)
+                path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(self.bounds(), 10.0, 10.0)
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.1, 0.1, 0.2, 0.85).set()
+                path.fill()
+                path.setLineWidth_(2.0)
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.5, 0.5, 0.8, 1.0).set()
+                path.stroke()
+
+        view = RoundedView.alloc().initWithFrame_(window.contentView().bounds())
+        window.setContentView_(view)
+        
+        label = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 4, 320, 40))
+        label.setStringValue_("🔄 自動撮影中...   🛑 停止: Cmd+Ctrl+X")
+        label.setTextColor_(NSColor.whiteColor())
+        label.setFont_(NSFont.boldSystemFontOfSize_(16))
+        label.setBezeled_(False)
+        label.setDrawsBackground_(False)
+        label.setEditable_(False)
+        label.setSelectable_(False)
+        label.setAlignment_(NSTextAlignmentCenter)
+        
+        view.addSubview_(label)
+        window.makeKeyAndOrderFront_(None)
+        AppHelper.runEventLoop()
+        
+    create_overlay()
+    sys.exit(0)
+
 
 # ─── State ───────────────────────────────────────
 
@@ -77,6 +132,7 @@ class AppState:
     last_image: Optional[Image.Image] = None
     change_detected_time: Optional[float] = None
     auto_thread: Optional[threading.Thread] = None
+    overlay_process: Optional[subprocess.Popen] = None
     status: str = "停止中"
     settling_time: float = 0.5
     polling_interval: float = 0.2
@@ -470,6 +526,13 @@ def start_capture():
     else:
         state.last_image = None
         state.change_detected_time = None
+        
+        if state.overlay_process is None:
+            try:
+                state.overlay_process = subprocess.Popen([sys.executable, sys.argv[0], "--overlay"])
+            except Exception as e:
+                print(f"オーバーレイ表示エラー: {e}")
+                
         state.auto_thread = threading.Thread(target=auto_monitor_loop, daemon=True)
         state.auto_thread.start()
         state.status = "🔄 監視中"
@@ -480,6 +543,12 @@ def start_capture():
 def stop_capture():
     state.is_running = False
     state.status = "停止中"
+    if state.overlay_process:
+        try:
+            state.overlay_process.terminate()
+        except:
+            pass
+        state.overlay_process = None
     print(f"停止: {state.capture_count}枚保存")
 
 
