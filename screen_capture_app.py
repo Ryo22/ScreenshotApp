@@ -137,9 +137,9 @@ class AppState:
     status: str = "停止中"
     settling_time: float = 0.5
     polling_interval: float = 0.2
-    auto_tap_enabled: bool = False
-    auto_tap_x: int = 0
-    auto_tap_y: int = 0
+    auto_tap_enabled: bool = True
+    auto_tap_x: int = 29
+    auto_tap_y: int = 494
     auto_tap_interval: float = 0.1
 
 state = AppState()
