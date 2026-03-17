@@ -15,6 +15,7 @@ import os
 import sys
 import json
 import time
+import filecmp
 import tempfile
 import subprocess
 import threading
@@ -549,6 +550,20 @@ def start_capture():
 def stop_capture():
     state.is_running = False
     state.status = "停止中"
+    
+    # 最後の2枚が完全に一致するかチェックして削除
+    if state.capture_count >= 2 and state.save_mode in ("folder", "both"):
+        path1 = state.save_dir / f"slide_{state.capture_count-1:04d}.png"
+        path2 = state.save_dir / f"slide_{state.capture_count:04d}.png"
+        if path1.exists() and path2.exists():
+            if filecmp.cmp(path1, path2, shallow=False):
+                try:
+                    os.remove(path2)
+                    state.capture_count -= 1
+                    print(f"※ 最後の2枚が完全に同一だったため、重複分({path2.name})を自動削除しました。")
+                except Exception as e:
+                    print(f"重複削除エラー: {e}")
+
     if state.overlay_process:
         try:
             state.overlay_process.terminate()
