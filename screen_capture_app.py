@@ -484,6 +484,12 @@ def auto_monitor_loop():
                 time.sleep(state.settling_time)
                 current_image = do_capture()
                 if current_image:
+                    if state.last_image and not images_different(state.last_image, current_image):
+                        print("ページの変化がなくなりました。自動撮影を停止します。")
+                        state.status = "🛑 変化なし (自動停止)"
+                        stop_capture()
+                        break
+                    state.last_image = current_image
                     save_image(current_image)
                 # Sleep in increments so stop_capture can interrupt it quickly
                 sleep_time = state.auto_tap_interval
